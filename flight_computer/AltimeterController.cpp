@@ -10,7 +10,7 @@ AltimeterController::AltimeterController() {
 bool AltimeterController::begin()
 { 
   // put your setup code here, to run once:
-  Wire.begin(22, 21);
+  Wire.begin(32, 33);
   delay(250);
   readCoefficients();
 

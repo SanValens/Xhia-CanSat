@@ -7,7 +7,7 @@ MPUController::MPUController() {
 }
 
 bool MPUController::begin() {
-  Wire.begin(22, 21); //SDA, SCL respectivamente
+  Wire.begin(32, 33); //SDA, SCL respectivamente
 
   //Set power mode:
   Wire.beginTransmission(MPU9ADD);  
