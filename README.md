@@ -1,4 +1,4 @@
 # Xhia-CanSat
-Código para computadora de a bordo (ESP32) y estación terrena (ESP8266)
+Código para computadora de a bordo (ESP32), carga secunadaria (Wemos D1 Mini) y estación terrena (Wemos D1 Mini)
 
-Códigos faltantes: computadora carga secundaria, integración de LoRA con ESP-NOW
+Versión Beta 1.2: Falta documentación, verificar Haversine y dobles verificaciones
