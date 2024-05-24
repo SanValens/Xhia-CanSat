@@ -18,7 +18,7 @@ class AltimeterController
         float readRelAltitude();
         float readRelAltitudeIndependentTemperature();
         uint16_t dig_T1, dig_P1; //unsigned
-        float referencePressure;
+        float referencePressure = 0;
     private:
         int _bmp280add = 0x76;
         int32_t t_fine, rawTemp, rawPressure;

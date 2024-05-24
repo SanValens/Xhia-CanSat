@@ -7,21 +7,14 @@
 #include "MPUController.h"
 #include "LoRaController.h"
 #include <esp_now.h>
+#include "esp_wifi.h"
 #include <WiFi.h>
-
-/* 
-
-DUE: Course and haversine check.
-Document the code
-Use a switch case on hear_command
-Consider adding retry mechanisms for failed LoRa transmissions.
-
-*/
 
 typedef struct struct_message {
   float longitude;
   float latitude;
   float altitude;
+  float refresh;
 } struct_message;
 
 struct_message second_stage;
@@ -49,26 +42,23 @@ HardwareSerial neogps(1);
 #define rst_lora_pin 4
 #define inte_lora_pin 5
 
-float latitude = 1, altitude = 1, longitud = 1, velocity, reference_gps_altitude;
+float latitude = 1, altitude = 1, longitud = 1, velocity, reference_gps_altitude, previus_altitude, apogee = 0;
 
 int counter = 0;
 
-volatile bool new_command = false;
+int max_turn_servo = 70;
 
-volatile bool new_data = false;;
+volatile bool new_data = false;
 
 volatile byte command;
 
 bool on_flight = false;
+bool gps_second_load_engaged = false;
+bool gps_engaged = false;
 
-const int interval_length = 150;
+const int interval_length = 1000;
 
-long last_time, init_time;
-
-double lat1 = 6.1412943;
-double long1 = -75.4019269;
-double lat2 = 6.1418871;
-double long2 = -75.3962987;
+long previus_time, init_time, last_gps_2nd_update, last_gps_update;
 
 const double EARTH_RADIUS = 6372795;
 
@@ -90,13 +80,20 @@ void setup() {
   if (!mpu.begin()) while (1); 
   if (!bmp.begin()) while (1);
   myservo.attach(servo_pin);
-  myservo.write(90);
-  delay(1500);
-  myservo.write(0);
   pinMode(gps_pss, INPUT);
   pinMode(gps_engage_led, OUTPUT);
   digitalWrite(gps_engage_led, HIGH);
-
+  delay(500);
+  digitalWrite(gps_engage_led, LOW);
+  delay(500);
+  digitalWrite(gps_engage_led, HIGH);
+  delay(500);
+  digitalWrite(gps_engage_led, LOW);
+  delay(500);
+  digitalWrite(gps_engage_led, HIGH);
+  delay(500);
+  digitalWrite(gps_engage_led, LOW);
+  digitalWrite(gps_engage_led, !gps_engaged);
   neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
   LoRa.onReceive(on_data_rec_lora);
   LoRa.receive();
@@ -104,49 +101,91 @@ void setup() {
   lora.data_send("Ready for command");
   //Init ESP-NOW
   WiFi.mode(WIFI_STA);
-  //esp_wifi_set_protocol(WIFI_STA, WIFI_PROTOCOL_LR);
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
   esp_now_register_recv_cb(on_data_rec_espnow);
-  esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_MCS0_LGI);
+
+  //esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_MCS0_LGI);
 }
 
 void on_data_rec_espnow(const uint8_t * mac, const uint8_t *incomingData, int len) {
   memcpy(&second_stage, incomingData, sizeof(second_stage));
   Serial.print("Data in #");
-  Serial.println(second_stage.latitude,8);
-  counter++;
+  Serial.println(distancia_haversine(latitude, longitud, second_stage.latitude, second_stage.longitude), 8);
+  last_gps_2nd_update = millis();
+  gps_second_load_engaged = true;
 }
 
 void on_data_rec_lora(int packet_size) {
   command = LoRa.read();
-  new_command = true;
 }
 
 void hear_command(){
-  if(command == 0b10101010) {
-    lora.data_send("Entering CALIBRATION");
-    mpu.calibrate_mpu();
-    lora.data_send("Calibration finished successfully");
-  } else if (command == 0b01010101) {
-    lora.data_send("Getting reference pressure");
-    bmp.getReferencePressure();
-    lora.data_send("Refernce pressure at: " + String(bmp.referencePressure));
-  } else if (command == 0b111111) {
-    lora.data_send("Closing hatch");
-    myservo.write(60); //Close hatch function
-  } else if (command == 0b01110111) {
-    lora.data_send("Pulling GPS Info");
-  } else if (command == 0b011011) {
-    lora.data_send("Openning hatch");
-    myservo.write(0); //Close hatch function
-  } else if (command == 0b11001100) {
-    lora.data_send("Entering FLIGH MODE");
-    last_time = init_time = millis();
-    on_flight = true;
+  bool both_engaged = true;
+  switch(command) {
+    case 0b10101010:
+      lora.data_send("Entering CALIBRATION");
+      mpu.calibrate_mpu();
+      lora.data_send("Calibration finished successfully");
+      break;
+
+    case 0b01010101:
+      lora.data_send("Getting reference pressure");
+      bmp.getReferencePressure();
+      lora.data_send("Refernce pressure at: " + String(bmp.referencePressure));
+      break;
+
+    case 0b111111:
+      lora.data_send("Closing hatch");
+      myservo.write(max_turn_servo); //Close hatch function
+      break;
+
+    case 0b01110111:
+      lora.data_send("Pulling GPS Info:");
+      lora.data_send("--- PRIMARY LOAD ---");
+      if(gps_engaged){
+        lora.data_send("Latitude: "+ String(latitude));
+        lora.data_send("Longitude: " + String(longitud));
+        lora.data_send("Last update: " + String((millis() - last_gps_update)/1000));
+      } else {
+        lora.data_send("Conexión no conseguida");
+        both_engaged = false;
+      }
+      lora.data_send("--- SECUNDARY LOAD ---");
+      if(gps_second_load_engaged) {
+        lora.data_send("Latitude: "+ String(second_stage.latitude));
+        lora.data_send("Longitude: " + String(second_stage.longitude));
+        lora.data_send("Last update: " + String((millis() - last_gps_2nd_update)/1000));
+      } else {
+        lora.data_send("No response");
+        both_engaged = false;
+      }
+      if(both_engaged) {
+        lora.data_send("Distance between loads: " + String(distancia_haversine(latitude, longitud, second_stage.latitude, second_stage.longitude)));
+        lora.data_send("Course between loads: " + String(course(latitude, longitud, second_stage.latitude, second_stage.longitude)));
+      } else {
+        lora.data_send("Unable to estimate distance nor course");
+      }
+      break;
+
+    case 0b011011:
+      lora.data_send("Openning hatch");
+      myservo.write(0); //Close hatch function
+      break;
+
+    case 0b11001100:
+      lora.data_send("Entering FLIGH MODE");
+      previus_time = init_time = millis();
+      on_flight = true;
+      break;
+
+    default:
+      break;
   }
+  command = 0b00000000;
 } 
 
 void read_gps() {
@@ -155,32 +194,45 @@ void read_gps() {
     longitud = gps.location.lng();
     altitude = gps.altitude.meters();
     velocity = gps.speed.mps();
-    digitalWrite(gps_engage_led, LOW);
-  } else {
-    digitalWrite(gps_engage_led, HIGH);
+    gps_engaged = true;
+    last_gps_update = millis();
   }
+  digitalWrite(gps_engage_led, !gps_engaged);
 }
 
 void flight_mode() {
-  if (millis() - last_time > interval_length) {
+  if (millis() - previus_time > interval_length) {
     long time = millis();
     mpu.update();
     read_gps();
-    String data = "/*" + String(counter) + "," + String(time - last_time) + "," +
+    
+    float delta_time = float(time - previus_time) / 1000;
+    float barometric_altitude =  bmp.readRelAltitude();
+    float vertical_velocity = (bmp.readRelAltitude() - previus_altitude) / delta_time;
+    if(bmp.referencePressure != 0) {
+      if(apogee < barometric_altitude){
+        apogee = barometric_altitude;
+      }
+      if(apogee - 50 > barometric_altitude) {
+        myservo.write(max_turn_servo);
+        String mess = "Deployed at altitude " + String(barometric_altitude) + " and an apogee " +  String(apogee);  
+        lora.data_send(mess);
+      }
+    }
+
+    String data = "/*" + String(counter) + "," + String(delta_time) + "," +
     String(bmp.readTemperature(0)) + "," + String(bmp.readPressure()) + "," +
-    String(bmp.readRelAltitude()) + "," + String(mpu.accel_data[0]) + "," +
+    String(barometric_altitude) + "," + String(mpu.accel_data[0]) + "," +
     String(mpu.accel_data[1]) + "," + String(mpu.accel_data[2]) + "," +
     String(mpu.angle_data[0]) + "," + String(mpu.angle_data[1]) + "," +
-    String(mpu.angle_data[2]) + "," + String(velocity) + "," + String(second_stage.latitude) + "," + String(second_stage.longitude) +"*/";
+    String(mpu.angle_data[2]) + "," + String(vertical_velocity);
+    /* + String(second_stage.latitude) + "," + String(second_stage.longitude) + ;*/
+
     lora.data_send(data);
-    Serial.println(data);
-    last_time = time;
+
+    previus_time = time;
+    previus_altitude = barometric_altitude;
     counter++;
-  }
-  while (neogps.available()) {
-    if (gps.encode(neogps.read())) {
-      new_data = true;
-    }
   }
 }
 
@@ -193,31 +245,30 @@ double distancia_haversine(double lt1, double lg1, double lt2, double lg2) {
 }
 
 double course(double lt1, double lg1, double lt2, double lg2) {
-    lt1 = radians(lt1);
-    lt2 = radians(lt2);
-    lg1 = radians(lg1);
-    lg2 = radians(lg2);
-    
-    double d_lg = lg2 - lg1;
-    
-    double y = sin(lg2 - lg1) * cos(lt2);
-    double x = cos(lt1) * sin(lt2) - sin(lt1) * cos(lt2) * cos(d_lg);
+  lt1 = radians(lt1);
+  lt2 = radians(lt2);
+  lg1 = radians(lg1);
+  lg2 = radians(lg2);
+  
+  double d_lg = lg2 - lg1;
+  
+  double y = sin(lg2 - lg1) * cos(lt2);
+  double x = cos(lt1) * sin(lt2) - sin(lt1) * cos(lt2) * cos(d_lg);
 
-    double course = atan2(y,x) * 180 / M_PI;
-    
-    course = fmod((course + 360), 360);
+  double course = atan2(y,x) * 180 / M_PI;
+  
+  course = fmod((course + 360), 360);
 
-    return course;
+  return course;
 }
 
 
 void loop() {
-  if(new_command){
-    new_command = false;
-    hear_command();
-  }
   if(on_flight) {
     flight_mode();
+  }
+  if(command != 0 ) {
+    hear_command();
   }
   while (neogps.available()) {
     if (gps.encode(neogps.read())) {
